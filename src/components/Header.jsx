@@ -1,34 +1,41 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import useStore from "../store/useStore";
-import supabase from "../lib/supabaseClient";
 
 export default function Header() {
     const { user, setUser } = useStore();
     const navigate = useNavigate();
     const [isAdmin, setIsAdmin] = useState(false);
 
-    // Vérification Admin au montage
+    // Vérification du statut Admin basée sur le pseudo stocké dans useStore
     useEffect(() => {
-        const checkAdmin = async () => {
-            if (!user) return;
-            const { data } = await supabase
-                .from("users")
-                .select("username")
-                .eq("id", user.id)
-                .single();
-
-            if (data && data.username === "Letotoo06") {
-                setIsAdmin(true);
-            }
-        };
-        checkAdmin();
+        if (user && user.username === "Letotoo06") {
+            setIsAdmin(true);
+        } else {
+            setIsAdmin(false);
+        }
     }, [user]);
 
     const handleLogout = async () => {
-        await supabase.auth.signOut();
-        setUser(null);
-        navigate("/login"); // Redirection fluide sans recharger la page
+        // 1. On lance la synchro, mais on ne bloque pas l'utilisateur plus de 2 secondes
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 2000);
+
+        try {
+            await fetch('./bridge.php', { signal: controller.signal });
+            console.log("Synchro effectuée");
+        } catch (e) {
+            console.warn("Le bridge a pris trop de temps ou a échoué, on déconnecte quand même.");
+        } finally {
+            clearTimeout(timeoutId);
+
+            // 2. Nettoyage
+            setUser(null);
+            localStorage.removeItem('user');
+
+            // 3. Redirection
+            navigate('/');
+        }
     };
 
     return (
@@ -44,7 +51,7 @@ export default function Header() {
                 <Link to="/pages" style={linkStyle}>Boutique</Link>
                 <Link to="/leaderboard" style={linkStyle}>Leaderboard</Link>
 
-                {/* BOUTON ADMIN (Style intégré pour coller au thème) */}
+                {/* Bouton Admin visible uniquement pour l'utilisateur Letotoo06 */}
                 {isAdmin && (
                     <Link to="/admin" style={adminLinkStyle}>
                         🛠️ ADMIN
@@ -55,37 +62,41 @@ export default function Header() {
             <div style={userStyle}>
                 {user ? (
                     <>
-                        <div style={avatarStyle}>
-                            {user.email ? user.email.charAt(0).toUpperCase() : "U"}
+                        <div style={userInfoStyle}>
+                            <div style={avatarStyle}>
+                                {user.username ? user.username.charAt(0).toUpperCase() : "U"}
+                            </div>
+                            <span style={usernameDisplayStyle}>{user.username}</span>
                         </div>
                         <button onClick={handleLogout} style={logoutBtn}>Déconnexion</button>
                     </>
                 ) : (
-                    <>
+                    <div style={authButtonsStyle}>
                         <Link to="/login" style={btnStyle}>Connexion</Link>
                         <Link to="/signup" style={btnStyle}>Inscription</Link>
-                    </>
+                    </div>
                 )}
             </div>
         </header>
     );
 }
 
-/* ----------------- CSS INLINE (VOTRE DESIGN) ----------------- */
+/* ----------------- STYLES AMÉLIORÉS ----------------- */
 const headerStyle = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "10px 30px",
+    padding: "0 30px",
     backgroundColor: "#1a1a2e",
     color: "white",
     position: "fixed",
     top: 0,
     left: 0,
     right: 0,
-    height: "60px",
+    height: "70px",
     zIndex: 1000,
-    boxShadow: "0 2px 5px rgba(0,0,0,0.3)",
+    boxShadow: "0 4px 10px rgba(0,0,0,0.3)",
+    borderBottom: "1px solid rgba(255,255,255,0.1)"
 };
 
 const logoStyle = {
@@ -95,14 +106,15 @@ const logoStyle = {
 
 const navStyle = {
     display: "flex",
-    gap: "20px",
+    gap: "25px",
     alignItems: "center",
 };
 
 const linkStyle = {
-    color: "white",
+    color: "#e0e0e0",
     textDecoration: "none",
     fontWeight: "500",
+    fontSize: "16px",
     transition: "color 0.2s",
 };
 
@@ -110,21 +122,35 @@ const adminLinkStyle = {
     color: "#ff4757",
     textDecoration: "none",
     fontWeight: "bold",
-    border: "1px solid #ff4757",
-    padding: "4px 8px",
-    borderRadius: "4px",
-    fontSize: "0.9rem"
+    border: "2px solid #ff4757",
+    padding: "6px 12px",
+    borderRadius: "20px",
+    fontSize: "0.85rem",
+    backgroundColor: "rgba(255, 71, 87, 0.1)",
+    transition: "all 0.3s ease",
 };
 
 const userStyle = {
     display: "flex",
     alignItems: "center",
+    gap: "15px",
+};
+
+const userInfoStyle = {
+    display: "flex",
+    alignItems: "center",
     gap: "10px",
 };
 
+const usernameDisplayStyle = {
+    fontWeight: "600",
+    fontSize: "14px",
+    color: "#ff6f61"
+};
+
 const avatarStyle = {
-    width: "35px",
-    height: "35px",
+    width: "38px",
+    height: "38px",
     borderRadius: "50%",
     backgroundColor: "#e94560",
     display: "flex",
@@ -133,15 +159,22 @@ const avatarStyle = {
     fontWeight: "bold",
     color: "white",
     fontSize: "16px",
+    boxShadow: "0 2px 5px rgba(0,0,0,0.2)"
+};
+
+const authButtonsStyle = {
+    display: "flex",
+    gap: "10px",
 };
 
 const btnStyle = {
     backgroundColor: "#0f3460",
     color: "white",
-    padding: "6px 12px",
-    borderRadius: "5px",
+    padding: "8px 16px",
+    borderRadius: "6px",
     textDecoration: "none",
-    fontWeight: "500",
+    fontWeight: "600",
+    fontSize: "14px",
     transition: "background-color 0.2s",
 };
 

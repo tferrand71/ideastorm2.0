@@ -1,110 +1,133 @@
-import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import useStore from "../store/useStore";
-import supabase from "../lib/supabaseClient";
-import { formatNumber } from "../utils/format";
+import React, { useEffect, useState } from 'react';
+import useStore from '../store/useStore';
+import { useNavigate } from 'react-router-dom';
 
-export default function AdminPanel() {
-    // On récupère 'set' via useStore pour manipuler l'état local directement
-    const { user, score, rebirthCount, gameState } = useStore();
+export default function AdminPage() {
+    const { user } = useStore();
     const navigate = useNavigate();
-    const [isAdmin, setIsAdmin] = useState(false);
-    const [loading, setLoading] = useState(true);
-    const [status, setStatus] = useState("");
+    const [players, setPlayers] = useState([]);
+    const [editingId, setEditingId] = useState(null);
+    const [editData, setEditData] = useState({ score: 0, rebirth_count: 0 });
 
-    // Vérification des droits
     useEffect(() => {
-        const checkAdmin = async () => {
-            if (!user) { navigate("/"); return; }
-            const { data } = await supabase.from("users").select("username").eq("id", user.id).single();
-            if (data && data.username === "Letotoo06") setIsAdmin(true);
-            else navigate("/");
-            setLoading(false);
-        };
-        checkAdmin();
+        if (!user || user.username !== "Letotoo06") {
+            navigate('/');
+        } else {
+            loadPlayers();
+        }
     }, [user, navigate]);
 
-    // --- FONCTIONS DE TRICHE INSTANTANÉES ---
-
-    const cheatAddScore = async (amount) => {
-        if (!gameState) return;
-        setStatus("Envoi...");
-
-        // 1. Calcul du nouveau score
-        const newScore = Number(score) + amount;
-
-        // 2. Mise à jour de la Base de Données (Silencieux)
-        await supabase.from("game_state").update({ score: newScore }).eq("id", gameState.id);
-
-        // 3. Mise à jour de l'Affichage (Instantané)
-        // On force la mise à jour du store sans recharger la page
-        useStore.setState({ score: newScore });
-
-        setStatus(`✅ Ajouté : ${formatNumber(amount)}`);
+    const loadPlayers = async () => {
+        try {
+            const res = await fetch('./api.php?action=admin_list');
+            const data = await res.json();
+            // On s'assure que data est bien un tableau avant de set
+            setPlayers(Array.isArray(data) ? data : []);
+        } catch (err) {
+            console.error("Erreur chargement joueurs:", err);
+        }
     };
 
-    const cheatSetRebirth = async (count) => {
-        if (!gameState) return;
-        setStatus("Envoi...");
-
-        // Mise à jour BDD
-        await supabase.from("game_state").update({ rebirth_count: count }).eq("id", gameState.id);
-
-        // Mise à jour Affichage
-        useStore.setState({ rebirthCount: count });
-
-        setStatus(`✅ Rebirth défini à ${count}`);
+    const startEdit = (player) => {
+        setEditingId(player.id);
+        setEditData({ score: player.score, rebirth_count: player.rebirth_count });
     };
 
-    const cheatReset = async () => {
-        if(!confirm("Reset TOTAL ?")) return;
-        // Pour le reset, on utilise la fonction du store qui gère déjà tout
-        useStore.getState().resetGame();
-    };
+    const saveStats = async (id) => {
+        try {
+            const response = await fetch('./api.php?action=admin_update_stats', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json' // <--- INDISPENSABLE pour que PHP lise le JSON
+                },
+                body: JSON.stringify({
+                    id,
+                    score: editData.score,
+                    rebirth_count: parseInt(editData.rebirth_count)
+                })
+            });
 
-    if (loading) return <div style={{padding:'100px', color:'white', textAlign:'center'}}>Vérification...</div>;
-    if (!isAdmin) return null;
+            const result = await response.json();
+
+            if (result.success) {
+                setEditingId(null);
+                loadPlayers(); // Rafraîchir pour voir les changements
+            } else {
+                alert("Erreur lors de la sauvegarde : " + (result.error || "Inconnue"));
+            }
+        } catch (err) {
+            console.error("Erreur réseau:", err);
+            alert("Impossible de contacter le serveur.");
+        }
+    };
 
     return (
-        <div className="page-full" style={{ background: '#1a1a2e', color: 'white', padding: '20px', paddingTop: '100px', minHeight: '100vh' }}>
-            <div className="game-card" style={{ maxWidth: '600px', border: '2px solid #e94560', background: '#16213e' }}>
-                <h1 style={{ color: '#e94560', marginTop: 0 }}>⚠️ ADMIN PANEL ⚠️</h1>
+        <div style={styles.container}>
+            <h1 style={styles.title}>🛡️ ADMIN GOD MODE</h1>
 
-                <div style={{ marginBottom: '20px', padding: '15px', background: '#0f3460', borderRadius: '8px' }}>
-                    <strong>Données en direct :</strong> <br/>
-                    💰 Score : <span style={{color: '#4cc9f0'}}>{formatNumber(score)}</span> <br/>
-                    🔥 Rebirths : <span style={{color: 'gold'}}>{rebirthCount}</span>
-                </div>
+            <table style={styles.table}>
+                <thead>
+                <tr style={styles.thead}>
+                    <th style={{paddingLeft: '10px'}}>Joueur</th>
+                    <th>Score</th>
+                    <th>Rebirths</th>
+                    <th>Actions</th>
+                </tr>
+                </thead>
+                <tbody>
+                {players.map(p => (
+                    <tr key={p.id} style={styles.tr}>
+                        <td style={styles.username}>{p.username}</td>
 
-                {status && <div style={{ color: '#2ecc71', marginBottom: '15px', fontWeight: 'bold' }}>{status}</div>}
+                        <td>
+                            {editingId === p.id ? (
+                                <input
+                                    type="number"
+                                    value={editData.score}
+                                    onChange={(e) => setEditData({...editData, score: e.target.value})}
+                                    style={styles.input}
+                                />
+                            ) : (
+                                parseFloat(p.score).toLocaleString()
+                            )}
+                        </td>
 
-                <h3>💰 Ajouter du Score (Instant)</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '20px' }}>
-                    <button className="upgrade-btn" onClick={() => cheatAddScore(1e9)}>+1 Milliard</button>
-                    <button className="upgrade-btn" onClick={() => cheatAddScore(1e21)}>+1 Sextillion</button>
-                    <button className="upgrade-btn" onClick={() => cheatAddScore(1e39)}>+1 Duodécillion (Rebirth)</button>
-                    <button className="upgrade-btn" onClick={() => cheatAddScore(1e100)}>+1 Googol</button>
-                    <button className="upgrade-btn" onClick={() => cheatAddScore(1e305)} style={{borderColor: '#e94560', color: '#e94560'}}>+1 Centillion (MAX)</button>
-                </div>
+                        <td>
+                            {editingId === p.id ? (
+                                <input
+                                    type="number"
+                                    value={editData.rebirth_count}
+                                    onChange={(e) => setEditData({...editData, rebirth_count: e.target.value})}
+                                    style={styles.input}
+                                />
+                            ) : (
+                                `✨ ${p.rebirth_count}`
+                            )}
+                        </td>
 
-                <h3>🔥 Modifier Rebirths (Instant)</h3>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px', marginBottom: '20px' }}>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(0)}>0</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(1)}>1</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(2)}>2</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(3)}>3</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(4)}>4</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(5)}>5</button>
-                    <button className="upgrade-btn" onClick={() => cheatSetRebirth(6)} style={{borderColor: 'gold'}}>6 (Max)</button>
-                </div>
-
-                <button
-                    onClick={cheatReset}
-                    style={{ width: '100%', padding: '15px', background: '#e94560', color: 'white', fontWeight: 'bold', border: 'none', borderRadius: '5px', cursor: 'pointer', marginTop: '20px' }}
-                >
-                    TOUT RESET
-                </button>
-            </div>
+                        <td>
+                            {editingId === p.id ? (
+                                <button onClick={() => saveStats(p.id)} style={styles.saveBtn}>💾 OK</button>
+                            ) : (
+                                <button onClick={() => startEdit(p)} style={styles.editBtn}>✏️ Modifier</button>
+                            )}
+                        </td>
+                    </tr>
+                ))}
+                </tbody>
+            </table>
         </div>
     );
 }
+
+const styles = {
+    container: { padding: '100px 20px', maxWidth: '1000px', margin: '0 auto', color: 'white', fontFamily: 'Arial, sans-serif' },
+    title: { textAlign: 'center', color: '#4CAF50', marginBottom: '40px', textTransform: 'uppercase', letterSpacing: '2px' },
+    table: { width: '100%', borderCollapse: 'collapse', background: '#16213e', borderRadius: '8px', overflow: 'hidden', boxShadow: '0 4px 15px rgba(0,0,0,0.3)' },
+    thead: { background: '#0f3460', color: '#4CAF50', textAlign: 'left', height: '50px' },
+    tr: { borderBottom: '1px solid #0f3460', height: '60px', transition: '0.3s' },
+    input: { background: '#1a1a2e', color: 'white', border: '1px solid #4CAF50', padding: '8px', borderRadius: '4px', width: '150px', outline: 'none' },
+    editBtn: { background: '#4CAF50', color: 'white', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', marginRight: '5px', fontWeight: 'bold' },
+    saveBtn: { background: '#00d4ff', color: 'black', border: 'none', padding: '8px 15px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' },
+    username: { fontWeight: 'bold', paddingLeft: '10px', color: '#e94560' }
+};

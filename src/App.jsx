@@ -16,23 +16,20 @@ import EasterEgg from "./components/EasterEgg.jsx";
 import useStore from "./store/useStore.js";
 import { formatNumber } from "./utils/format.js";
 
-// Note : On n'importe plus supabase ici car l'auth passe par ton API Node
-
 export default function App() {
     const {
         score, perClick, perSecond, activeMedia, addScore,
-        addPerSecond, saveGame, user, setUser, gameState,
+        addPerSecond, saveGame, loadGame, user, setUser, gameState,
         showMedia, hasSeenEnding, closeEasterEgg
     } = useStore();
 
-    // 1. GESTION DE LA SESSION (Version MySQL locale)
+    // 1. GESTION DE LA SESSION
     useEffect(() => {
-        // On récupère l'utilisateur stocké lors du login par ton API
         const storedUser = localStorage.getItem("game_user");
         if (storedUser) {
             try {
                 const parsedUser = JSON.parse(storedUser);
-                setUser(parsedUser); // Déclenche loadGame() dans useStore.js
+                setUser(parsedUser);
             } catch (e) {
                 console.error("Erreur session:", e);
                 localStorage.removeItem("game_user");
@@ -46,7 +43,21 @@ export default function App() {
         return () => clearInterval(interval);
     }, [perSecond, addPerSecond]);
 
-    // 3. SAUVEGARDE AUTO (Toutes les 10s)
+    // 3. SYNCHRO AUTOMATIQUE QUAND ON REVIENT SUR L'ONGLET
+    // Très important pour que les modifs faites dans l'Admin Panel soient appliquées au jeu
+    useEffect(() => {
+        const handleFocus = () => {
+            if (user && gameState) {
+                console.log("🔄 Synchro avec la base de données (Retour sur onglet)...");
+                loadGame();
+            }
+        };
+
+        window.addEventListener('focus', handleFocus);
+        return () => window.removeEventListener('focus', handleFocus);
+    }, [user, gameState, loadGame]);
+
+    // 4. SAUVEGARDE AUTO (Toutes les 10s)
     useEffect(() => {
         if (user && gameState) {
             const saveInterval = setInterval(() => saveGame(), 10000);
@@ -71,16 +82,13 @@ export default function App() {
                     element={
                         user ? (
                             !gameState ? (
-                                // Écran de chargement pendant que MySQL répond
                                 <div className="page-full bg-home">
                                     <div className="game-card" style={{ textAlign: 'center', padding: '50px' }}>
                                         <h2 style={{ color: '#ff6f61' }}>Chargement de ta partie...</h2>
                                         <div style={{ fontSize: '3rem', marginTop: '20px', animation: 'spin 1s infinite linear' }}>⏳</div>
-                                        <p style={{ marginTop: '10px', fontSize: '0.8rem', opacity: 0.6 }}>Connexion au serveur local...</p>
                                     </div>
                                 </div>
                             ) : (
-                                // Le Jeu une fois chargé
                                 <div className="page-full bg-home">
                                     <div className="game-card">
                                         <h1>IdeaStorm</h1>

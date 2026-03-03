@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 // --- CONFIGURATION ---
-const API_URL = "http://192.168.1.24/ideastorm/api.php";
+const API_URL = "./api.php";
 
 // --- UTILITAIRES ---
 const toCamelCase = (obj) => {
