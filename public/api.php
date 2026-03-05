@@ -1,5 +1,5 @@
 <?php
-// On active le tampon de sortie pour capturer tout texte parasite
+// On active le tampon de sortie pour capturer tout texte parasite et éviter de casser le JSON
 ob_start();
 
 header("Access-Control-Allow-Origin: *");
@@ -7,13 +7,46 @@ header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type");
 header("Content-Type: application/json");
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') { exit; }
+// Gestion des requêtes pre-flight CORS
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    exit;
+}
 
-// --- CONNEXION LOCALE ---
-$conn = @new mysqli("db", "root", "azerty", "ideastorm");
+// --- CONFIGURATION HYBRIDE (LOCAL & CLOUD) ---
+$db_configs = [
+    'local' => [
+        'host' => 'db',
+        'user' => 'root',
+        'pass' => 'azerty',
+        'name' => 'ideastorm',
+        'port' => 3306
+    ],
+    'aiven' => [
+        'host' => 'mysql-1f9595fd-ideastorm.k.aivencloud.com',
+        'user' => 'avnadmin',
+        'pass' => 'AVNS_u61JknRgEoe0FX1ESOE',
+        'name' => 'defaultdb',
+        'port' => 16110
+    ]
+];
+
+$conn = null;
+$active_mode = "none";
+
+// 1. Tentative de connexion Locale
+$conn = @new mysqli($db_configs['local']['host'], $db_configs['local']['user'], $db_configs['local']['pass'], $db_configs['local']['name'], $db_configs['local']['port']);
+
 if ($conn->connect_error) {
-    ob_clean();
-    die(json_encode(["error" => "Base de données locale inaccessible"]));
+    // 2. Repli silencieux sur Aiven (Cloud) si le local échoue
+    $conn = @new mysqli($db_configs['aiven']['host'], $db_configs['aiven']['user'], $db_configs['aiven']['pass'], $db_configs['aiven']['name'], $db_configs['aiven']['port']);
+
+    if ($conn->connect_error) {
+        ob_clean();
+        die(json_encode(["error" => "Serveurs injoignables. Le jeu fonctionne en mode hors ligne temporaire."]));
+    }
+    $active_mode = "cloud";
+} else {
+    $active_mode = "local";
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -22,7 +55,7 @@ $action = $_GET['action'] ?? '';
 // --- FONCTION POUR LANCER LA SYNCHRO ---
 function runBridgeSync() {
     if (file_exists('bridge.php')) {
-        include 'bridge.php';
+        include_once 'bridge.php'; // include_once pour éviter de redéclarer les fonctions
     }
 }
 
@@ -36,12 +69,13 @@ if ($method === 'POST' && $action === 'signup') {
     if ($conn->query($sql)) {
         $newId = $conn->insert_id;
         $conn->query("INSERT INTO game_state (user_id, save_data, score, rebirth_count) VALUES ($newId, '{}', 0, 0)");
-        runBridgeSync();
+
+        runBridgeSync(); // Synchro
         ob_clean();
-        echo json_encode(["id" => $newId, "username" => $user]);
+        echo json_encode(["success" => true, "userId" => $newId, "username" => $user, "mode" => $active_mode]);
     } else {
         ob_clean();
-        echo json_encode(["error" => "Pseudo déjà pris"]);
+        echo json_encode(["error" => "Pseudo déjà pris ou erreur serveur."]);
     }
 }
 
@@ -49,98 +83,79 @@ if ($method === 'POST' && $action === 'signup') {
 else if ($method === 'POST' && $action === 'login') {
     $data = json_decode(file_get_contents('php://input'), true);
     $user = $conn->real_escape_string($data['username']);
-    $res = $conn->query("SELECT * FROM users WHERE username = '$user'");
-    $userData = $res->fetch_assoc();
+    $pass = $data['password'];
 
-    if ($userData && password_verify($data['password'], $userData['password_hash'])) {
-        runBridgeSync();
-        ob_clean();
-        echo json_encode(["id" => $userData['id'], "username" => $userData['username']]);
+    $sql = "SELECT id, password_hash FROM users WHERE username='$user'";
+    $res = $conn->query($sql);
+
+    if ($res->num_rows > 0) {
+        $row = $res->fetch_assoc();
+        if (password_verify($pass, $row['password_hash'])) {
+            ob_clean();
+            echo json_encode(["success" => true, "userId" => $row['id'], "username" => $user, "mode" => $active_mode]);
+        } else {
+            ob_clean();
+            echo json_encode(["error" => "Mot de passe incorrect"]);
+        }
     } else {
         ob_clean();
-        http_response_code(401);
-        echo json_encode(["error" => "Identifiants incorrects"]);
+        echo json_encode(["error" => "Utilisateur non trouvé"]);
     }
 }
 
-// --- 3. CHARGER ---
-else if ($method === 'GET' && $action === 'load') {
-    $userId = intval($_GET['userId']);
-    $res = $conn->query("SELECT save_data FROM game_state WHERE user_id = $userId");
-    $row = $res->fetch_assoc();
-    ob_clean();
-    echo $row['save_data'] ?? json_encode([]);
-}
-
-// --- 4. SAUVEGARDER ---
+// --- 3. SAUVEGARDER LE JEU ---
 else if ($method === 'POST' && $action === 'save') {
     $data = json_decode(file_get_contents('php://input'), true);
-    $userId = intval($data['user_id'] ?? 0);
-    $score = $data['score'] ?? 0;
-    $rebirthCount = intval($data['rebirth_count'] ?? 0);
+    $userId = (int)$data['user_id'];
+    $score = (float)$data['score'];
+    $saveData = $conn->real_escape_string(json_encode($data['save_data']));
+    $rebirthCount = isset($data['save_data']['rebirthCount']) ? (int)$data['save_data']['rebirthCount'] : 0;
 
-    $saveData = $conn->real_escape_string(json_encode($data['save_data'] ?? []));
-    $sql = "UPDATE game_state SET save_data = '$saveData', score = '$score', rebirth_count = $rebirthCount WHERE user_id = $userId";
-
-    ob_clean();
-    if ($conn->query($sql)) {
-        echo json_encode(["success" => true]);
-    } else {
-        echo json_encode(["error" => $conn->error]);
-    }
-}
-
-// --- 5. LEADERBOARD ---
-else if ($method === 'GET' && $action === 'leaderboard') {
-    $sql = "SELECT u.username, gs.score, gs.rebirth_count FROM game_state gs JOIN users u ON gs.user_id = u.id ORDER BY gs.rebirth_count DESC, gs.score DESC LIMIT 50";
-    $result = $conn->query($sql);
-    $rows = [];
-    if ($result) {
-        while($row = $result->fetch_assoc()) {
-            $rows[] = ["username" => $row['username'], "score" => floatval($row['score']), "rebirth_count" => intval($row['rebirth_count'])];
-        }
-    }
-    ob_clean();
-    echo json_encode($rows);
-}
-
-// --- ACTION : ADMIN UPDATE STATS (VERSION FINALE SYNCHRONISÉE) ---
-else if ($method === 'POST' && $action === 'admin_update_stats') {
-    $data = json_decode(file_get_contents('php://input'), true);
-    $userId = intval($data['id'] ?? 0);
-    $newScore = $data['score'] ?? 0;
-    $newRebirth = intval($data['rebirth_count'] ?? 0);
-
-    // 1. On récupère le save_data actuel pour ne pas perdre les upgrades achetées
-    $res = $conn->query("SELECT save_data FROM game_state WHERE user_id = $userId");
-    $row = $res->fetch_assoc();
-    $currentSave = json_decode($row['save_data'], true) ?: [];
-
-    // 2. On met à jour les stats vitales à l'intérieur du JSON
-    // Note: On utilise les clés exactes de ton useStore (score, rebirthCount)
-    $currentSave['score'] = (float)$newScore;
-    $currentSave['rebirthCount'] = $newRebirth;
-
-    // On recalcule souvent le perClick/perSecond en fonction du rebirth dans ton ResetState,
-    // mais ici on injecte directement les valeurs pour plus de sûreté
-    $updatedSaveData = $conn->real_escape_string(json_encode($currentSave));
-
-    $sql = "UPDATE game_state SET 
-            score = '$newScore', 
-            rebirth_count = $newRebirth, 
-            save_data = '$updatedSaveData' 
-            WHERE user_id = $userId";
+    $sql = "UPDATE game_state SET score = '$score', rebirth_count = '$rebirthCount', save_data = '$saveData' WHERE user_id = $userId";
 
     if ($conn->query($sql)) {
+        runBridgeSync(); // Synchro
         ob_clean();
-        echo json_encode(["success" => true]);
+        echo json_encode(["success" => true, "mode" => $active_mode]);
     } else {
         ob_clean();
         echo json_encode(["error" => $conn->error]);
     }
 }
 
-// --- 7. ADMIN : LISTE DES JOUEURS ---
+// --- 4. CHARGER LE JEU ---
+else if ($method === 'GET' && $action === 'load') {
+    $userId = (int)$_GET['userId'];
+    $sql = "SELECT save_data FROM game_state WHERE user_id=$userId";
+    $res = $conn->query($sql);
+
+    if ($res->num_rows > 0) {
+        $row = $res->fetch_assoc();
+        ob_clean();
+        echo $row['save_data'];
+    } else {
+        ob_clean();
+        echo json_encode([]);
+    }
+}
+
+// --- 5. CLASSEMENT (GET SCORE) ---
+else if ($method === 'GET' && $action === 'get_score') {
+    $sql = "SELECT u.username, gs.score, gs.rebirth_count 
+            FROM users u 
+            JOIN game_state gs ON u.id = gs.user_id 
+            ORDER BY gs.rebirth_count DESC, gs.score DESC";
+
+    $res = $conn->query($sql);
+    $scores = [];
+    while($row = $res->fetch_assoc()) {
+        $scores[] = $row;
+    }
+    ob_clean();
+    echo json_encode($scores);
+}
+
+// --- 6. ADMIN : LISTE DES JOUEURS ---
 else if ($method === 'GET' && $action === 'admin_list') {
     $sql = "SELECT u.id, u.username, gs.score, gs.rebirth_count 
             FROM users u 
@@ -156,17 +171,45 @@ else if ($method === 'GET' && $action === 'admin_list') {
     echo json_encode($players);
 }
 
-// --- 8. ADMIN : SUPPRIMER JOUEUR ---
-else if ($method === 'POST' && $action === 'admin_delete') {
+// --- 7. ADMIN : MODIFIER STATS ---
+else if ($method === 'POST' && $action === 'admin_update_stats') {
     $data = json_decode(file_get_contents('php://input'), true);
-    $idToDelete = intval($data['id'] ?? 0);
+    $userId = (int)$data['id'];
+    $newScore = (float)$data['score'];
+    $newRebirth = (int)$data['rebirth_count'];
 
-    if ($idToDelete > 0) {
-        $conn->query("DELETE FROM game_state WHERE user_id = $idToDelete");
-        $conn->query("DELETE FROM users WHERE id = $idToDelete");
+    // On récupère la sauvegarde actuelle pour ne pas écraser l'inventaire
+    $res = $conn->query("SELECT save_data FROM game_state WHERE user_id = $userId");
+    $currentSave = [];
+    if ($res->num_rows > 0) {
+        $row = $res->fetch_assoc();
+        $currentSave = json_decode($row['save_data'], true);
+    }
+
+    $currentSave['score'] = $newScore;
+    $currentSave['rebirthCount'] = $newRebirth;
+
+    $updatedSaveData = $conn->real_escape_string(json_encode($currentSave));
+
+    $sql = "UPDATE game_state SET 
+            score = '$newScore', 
+            rebirth_count = $newRebirth, 
+            save_data = '$updatedSaveData' 
+            WHERE user_id = $userId";
+
+    if ($conn->query($sql)) {
+        runBridgeSync();
         ob_clean();
         echo json_encode(["success" => true]);
+    } else {
+        ob_clean();
+        echo json_encode(["error" => $conn->error]);
     }
 }
 
-ob_end_flush();
+// Si l'action n'est pas reconnue
+else {
+    ob_clean();
+    echo json_encode(["error" => "Action invalide"]);
+}
+?>
