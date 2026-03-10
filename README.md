@@ -7,7 +7,7 @@ Cliquez, automatisez et atteignez des scores astronomiques pour dominer le class
 
 Pas besoin d'installation ! Le jeu est accessible directement dans votre navigateur :
 
-👉 **[CLIQUEZ ICI POUR JOUER (GitHub Pages)](https://tferrand71.github.io/IDEAStorm/)** 👈
+👉 **[CLIQUEZ ICI POUR JOUER](https://tobias-ferrand.ovh/ideastorm/index.html)** 👈
 
 ---
 
