@@ -3,7 +3,8 @@ import { create } from "zustand";
 // --- CONFIGURATION ---
 const API_URL = "./api.php";
 
-// --- UTILITAIRES ---
+let autosaveTimer = null;
+
 const toCamelCase = (obj) => {
     if (!obj || typeof obj !== 'object') return obj;
     const newObj = {};
@@ -20,22 +21,19 @@ const toNumber = (val, defaultVal) => {
     return isNaN(num) ? defaultVal : num;
 };
 
-// --- COÛTS DE BASE ---
 const BASE_COSTS = {
     click: 50, auto: 100,
-    cat: 250, cat2: 2500,
-    volcan: 25000, cat3: 200000, goose: 1000000,
+    cat: 250, cat2: 2500, volcan: 25000, cat3: 200000, goose: 1000000,
     super: 500000, mega: 2500000, giga: 15000000, ultimate: 2500000,
     c500k: 40000000, c1m: 1e8, c10m: 1e9, c100m: 1e10, c1b: 1e11, c10b: 1e12, c100b: 1e13,
     a500k: 40000000, a1m: 1e8, a10m: 1e9, a100m: 1e10, a1b: 1e11, a10b: 1e12, a100b: 1e13,
     multX2: 1e8, autoMultX2: 1e8,
     godA: 1e12, godAA: 1e15, sext: 1e21, noni: 1e27, duo: 1e36,
-    vigin: 1e63, trigin: 1e93, quinqua: 1e153, nonagin: 1e273, // Ajouts intermédiaires
+    vigin: 1e63, trigin: 1e93, quinqua: 1e153, nonagin: 1e273,
     googol: 1e100, cent: 1e303,
     c1e120: 1e120, c1e180: 1e180, c1e240: 1e240, c1e300: 1e300
 };
 
-// --- ÉTAT INITIAL ---
 const getResetState = (rebirthCount) => {
     const isHardReset = rebirthCount === 0;
     const highMult = isHardReset ? 1 : (rebirthCount + 2);
@@ -71,7 +69,6 @@ const getResetState = (rebirthCount) => {
         clickNonillionCost: BASE_COSTS.noni * highMult, autoNonillionCost: BASE_COSTS.noni * highMult,
         clickDuodecillionCost: BASE_COSTS.duo * highMult, autoDuodecillionCost: BASE_COSTS.duo * highMult,
 
-        // Nouveaux Coûts intermédiaires
         clickVigintillionCost: BASE_COSTS.vigin * highMult,
         clickTrigintillionCost: BASE_COSTS.trigin * highMult,
         clickQuinquagintillionCost: BASE_COSTS.quinqua * highMult,
@@ -87,11 +84,10 @@ const getResetState = (rebirthCount) => {
     };
 };
 
-// --- STORE ZUSTAND ---
 export const useStore = create((set, get) => ({
     ...getResetState(0),
     user: null,
-    gameState: null,
+    gameState: false, // <-- Sécurité pour que l'autosave n'écrase pas la BDD au lancement
     showMedia: true,
     hasSeenEnding: false,
 
@@ -104,34 +100,62 @@ export const useStore = create((set, get) => ({
         if (user) {
             localStorage.setItem("game_user", JSON.stringify(user));
             get().loadGame();
+
+            // Lancement de la sauvegarde automatique (toutes les 5s)
+            if (!autosaveTimer) {
+                autosaveTimer = setInterval(() => {
+                    get().saveToDB();
+                }, 5000);
+            }
         } else {
             localStorage.removeItem("game_user");
-            set({ gameState: null, score: 0 });
+            set({ gameState: false, ...getResetState(0) });
+
+            if (autosaveTimer) {
+                clearInterval(autosaveTimer);
+                autosaveTimer = null;
+            }
         }
     },
 
     loadGame: async () => {
         const s = get();
         if (!s.user) return;
+
+        // 🟢 CORRECTION VITALE ICI : On récupère l'ID correctement
+        const currentUserId = s.user.userId || s.user.id;
+
         try {
-            const res = await fetch(`${API_URL}?action=load&userId=${s.user.id}`);
+            console.log("📥 Chargement de la sauvegarde pour l'ID :", currentUserId);
+            // On ajoute Date.now() pour empêcher le navigateur de nous ressortir une vieille sauvegarde du cache
+            const res = await fetch(`${API_URL}?action=load&userId=${currentUserId}&t=${Date.now()}`, {
+                cache: 'no-store'
+            });
+
             if (!res.ok) throw new Error(`Erreur HTTP: ${res.status}`);
+
             const rawData = await res.json();
+            console.log("✅ Données reçues depuis la BDD :", rawData);
+
             if (rawData && Object.keys(rawData).length > 0) {
                 const camelData = toCamelCase(rawData);
                 const savedRebirth = toNumber(camelData.rebirthCount, 0);
                 const defaultState = getResetState(savedRebirth);
-                set({ ...defaultState, ...camelData, gameState: true,
+                set({
+                    ...defaultState,
+                    ...camelData,
+                    gameState: true, // <-- Le jeu est chargé, on débloque l'autosave !
                     score: toNumber(camelData.score, 0),
                     perClick: toNumber(camelData.perClick, defaultState.perClick),
                     perSecond: toNumber(camelData.perSecond, 0),
                     rebirthCount: savedRebirth
                 });
             } else {
+                console.log("📝 Nouveau joueur, initialisation à zéro.");
                 set({ ...getResetState(0), gameState: true });
             }
         } catch (err) {
-            alert("Erreur de connexion au serveur de sauvegarde. Le jeu se lance en mode temporaire.");
+            console.error("❌ Erreur de chargement:", err);
             set({ ...getResetState(0), gameState: true });
         }
     },
@@ -139,8 +163,15 @@ export const useStore = create((set, get) => ({
     saveToDB: async (partialState = {}) => {
         const s = get();
         if (!s.user) return;
+
+        // 🛑 SÉCURITÉ : On bloque la sauvegarde tant que loadGame n'a pas fini de télécharger la vraie sauvegarde
+        if (s.gameState !== true) return;
+
+        // 🟢 CORRECTION VITALE ICI : On utilise le bon ID pour sauvegarder
+        const currentUserId = s.user.userId || s.user.id;
+
         const currentState = { ...s, ...partialState };
-        const keysToExclude = ['user', 'gameState', 'saveToDB', 'saveGame', 'loadGame', 'buyUpgrade', 'sellUpgrade', 'buyAutoUpgradeHelper'];
+        const keysToExclude = ['user', 'gameState', 'saveToDB', 'saveGame', 'loadGame', 'buyUpgrade', 'sellUpgrade', 'buyAutoUpgradeHelper', 'resetGame'];
         const dataToSave = {};
         for (const key in currentState) {
             if (typeof currentState[key] !== 'function' && !keysToExclude.includes(key)) {
@@ -152,11 +183,12 @@ export const useStore = create((set, get) => ({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    user_id: s.user.id,
+                    user_id: currentUserId, // C'est lui qui faisait l'erreur !
                     score: currentState.score,
                     save_data: dataToSave
                 })
             });
+            console.log("💾 Sauvegardé avec succès ! Score:", currentState.score);
         } catch (err) { console.error("Erreur sauvegarde:", err); }
     },
 
@@ -213,8 +245,9 @@ export const useStore = create((set, get) => ({
         const state = get();
         const cost = toNumber(state[costKey], Infinity);
         if (state.score >= cost) {
+            const pm = Math.pow(50, state.rebirthCount);
             const newScore = Math.floor(state.score - cost);
-            const newPerSecond = Math.floor(state.perSecond + Number(autoBonus));
+            const newPerSecond = Math.floor(state.perSecond + Number(autoBonus) * pm);
             const newCost = cost * 1.5;
             set({ score: newScore, perSecond: newPerSecond, [costKey]: newCost });
             get().saveToDB();
@@ -227,15 +260,21 @@ export const useStore = create((set, get) => ({
         if (currentCost <= 0) return;
         const previousCost = currentCost / 1.5;
         const refund = previousCost / 2;
+
+        let deduction = toNumber(statDeduction, 0);
+        if (statKey === 'perSecond') {
+            deduction = Math.floor(deduction * Math.pow(50, state.rebirthCount));
+        }
+
         set({
             score: Math.floor(state.score + refund),
-            [statKey]: Math.max(0, Math.floor(state[statKey] - toNumber(statDeduction, 0))),
+            [statKey]: Math.max(0, Math.floor(state[statKey] - deduction)),
             [costKey]: previousCost
         });
         get().saveToDB();
     },
 
-    // MAPPINGS CLICS
+    // --- MAPPINGS CLICS ---
     buyClickUpgrade: () => get().buyUpgrade('clickUpgradeCost', 1),
     buySuperClick: () => get().buyUpgrade('superClickCost', 10000),
     buyMegaClick: () => get().buyUpgrade('megaClickCost', 100000),
@@ -252,13 +291,10 @@ export const useStore = create((set, get) => ({
     buySextillion: () => get().buyUpgrade('clickSextillionCost', 1e21),
     buyNonillion: () => get().buyUpgrade('clickNonillionCost', 1e27),
     buyDuodecillion: () => get().buyUpgrade('clickDuodecillionCost', 1e36),
-
-    // Nouveaux paliers clics
     buyVigintillion: () => get().buyUpgrade('clickVigintillionCost', 1e60),
     buyTrigintillion: () => get().buyUpgrade('clickTrigintillionCost', 1e90),
     buyQuinquagintillion: () => get().buyUpgrade('clickQuinquagintillionCost', 1e150),
     buyNonagintillion: () => get().buyUpgrade('clickNonagintillionCost', 1e270),
-
     buyGoogol: () => get().buyUpgrade('clickGoogolCost', 1e100),
     buyCentillion: () => get().buyUpgrade('clickCentillionCost', 1e303),
     buy1e120: () => get().buyUpgrade('click1e120Cost', 1e120),
@@ -266,7 +302,7 @@ export const useStore = create((set, get) => ({
     buy1e240: () => get().buyUpgrade('click1e240Cost', 1e240),
     buy1e300: () => get().buyUpgrade('click1e300Cost', 1e300),
 
-    // MAPPINGS AUTO
+    // --- MAPPINGS AUTO ---
     buyAutoUpgrade: () => get().buyAutoUpgradeHelper('autoUpgradeCost', 2),
     buyAuto500k: () => get().buyAutoUpgradeHelper('auto500kCost', 500000),
     buyAuto1m: () => get().buyAutoUpgradeHelper('auto1mCost', 1000000),
@@ -283,7 +319,7 @@ export const useStore = create((set, get) => ({
     buyAutoGoogol: () => get().buyAutoUpgradeHelper('autoGoogolCost', 1e100),
     buyAutoCentillion: () => get().buyAutoUpgradeHelper('autoCentillionCost', 1e303),
 
-    // Multiplicateurs
+    // --- MULTIPLICATEURS ---
     buyMultX2: async () => {
         const s = get();
         if(s.score >= s.multX2Cost){
@@ -309,7 +345,7 @@ export const useStore = create((set, get) => ({
     sellClickUpgrade: () => get().sellUpgrade('clickUpgradeCost', 'perClick', 1),
     sellSuperClick: () => get().sellUpgrade('superClickCost', 'perClick', 10000),
 
-    // Compagnons
+    // --- COMPAGNONS UNIQUES ---
     buyCatUpgrade: async () => {
         const s = get();
         if(s.score >= s.catUpgradeCost && !s.catBought) {
@@ -351,5 +387,21 @@ export const useStore = create((set, get) => ({
         }
     },
 }));
+
+// ==============================================================
+// 🟢 AUTO-RECONNEXION LORS DU RAFRAÎCHISSEMENT (F5) DE LA PAGE
+// ==============================================================
+const restoreSession = () => {
+    try {
+        const savedUserStr = localStorage.getItem("game_user");
+        if (savedUserStr) {
+            useStore.getState().setUser(JSON.parse(savedUserStr));
+        }
+    } catch (err) {
+        console.error("Erreur de restauration de la session:", err);
+    }
+};
+
+restoreSession();
 
 export default useStore;

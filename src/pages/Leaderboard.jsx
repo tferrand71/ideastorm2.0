@@ -1,27 +1,32 @@
 import React, { useEffect, useState } from "react";
 import { formatNumber } from "../utils/format";
 
+// 🟢 CORRECTION 1 : L'URL exacte pointant vers le dossier dist/
+const API_URL = "http://localhost/ideastorm/dist/api.php";
+
 export default function Leaderboard() {
     const [players, setPlayers] = useState([]);
     const [loading, setLoading] = useState(true);
 
-    // URL vers ton API PHP
-    const API_URL = "http://localhost/ideastorm/api.php";
-
     useEffect(() => {
         const fetchLeaderboard = async () => {
             try {
-                const res = await fetch(`${API_URL}?action=leaderboard`);
+                // 🟢 CORRECTION 2 : L'action dans api.php est "get_score", pas "leaderboard"
+                const res = await fetch(`${API_URL}?action=get_score`);
                 if (!res.ok) throw new Error("Erreur réseau");
 
                 const data = await res.json();
 
-                const rankedData = data.map((player, index) => ({
-                    ...player,
-                    rank: index + 1
-                }));
-
-                setPlayers(rankedData);
+                // Sécurité : on s'assure que data est bien un tableau avant de faire un .map
+                if (Array.isArray(data)) {
+                    const rankedData = data.map((player, index) => ({
+                        ...player,
+                        rank: index + 1
+                    }));
+                    setPlayers(rankedData);
+                } else {
+                    setPlayers([]);
+                }
             } catch (error) {
                 console.error("Erreur leaderboard:", error);
             } finally {
@@ -30,6 +35,8 @@ export default function Leaderboard() {
         };
 
         fetchLeaderboard();
+
+        // Rafraîchissement automatique toutes les 10 secondes
         const interval = setInterval(fetchLeaderboard, 10000);
         return () => clearInterval(interval);
     }, []);
@@ -69,7 +76,7 @@ export default function Leaderboard() {
                                             {rankBadge}
                                         </td>
 
-                                        <td style={{ padding: '12px', fontWeight: '600' }}>
+                                        <td style={{ padding: '12px', fontWeight: '600', color: 'black' }}>
                                             {player.username || "Anonyme"}
                                         </td>
 

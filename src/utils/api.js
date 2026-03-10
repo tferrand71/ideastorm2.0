@@ -1,9 +1,8 @@
-// On utilise './api.php' pour forcer la recherche dans le dossier courant (dist)
-// Cela évite que le navigateur cherche à la racine du serveur http://localhost/api.php
+// ⚠️ L'adresse du port exposé par ton Docker pour le serveur Web.
+// Assure-toi que cette URL ouvre bien une page blanche ou retourne "Action invalide" si tu la tapes dans ton navigateur.
 const API_URL = "./api.php";
 
 export const signIn = async (username, password) => {
-    // Debug pour voir exactement où React essaie de taper
     console.log("Appel API Login vers:", `${API_URL}?action=login`);
 
     const res = await fetch(`${API_URL}?action=login`, {
@@ -13,13 +12,12 @@ export const signIn = async (username, password) => {
     });
 
     if (!res.ok) {
-        // Sécurité si le serveur renvoie du HTML au lieu de JSON (Erreur 404 par exemple)
         const contentType = res.headers.get("content-type");
         if (contentType && contentType.indexOf("application/json") !== -1) {
             const err = await res.json();
             throw new Error(err.error || "Erreur de connexion");
         } else {
-            throw new Error("Le serveur a renvoyé une réponse invalide (404 ou erreur PHP). Vérifiez que api.php est bien dans le dossier dist.");
+            throw new Error("Le serveur a renvoyé une réponse non-JSON. Vérifiez que API_URL pointe bien vers le Docker PHP.");
         }
     }
     return res.json();
@@ -46,8 +44,8 @@ export const signUp = async (username, password) => {
 
 export const fetchLeaderboard = async () => {
     try {
-        const res = await fetch(`${API_URL}?action=leaderboard`);
-        if (!res.ok) throw new Error("Erreur leaderboard");
+        const res = await fetch(`${API_URL}?action=get_score`);
+        if (!res.ok) throw new Error("Erreur réseau");
         return await res.json();
     } catch (err) {
         console.error("Erreur Leaderboard détaillée:", err);
